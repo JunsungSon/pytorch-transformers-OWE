@@ -79,9 +79,13 @@ class BERTDataset(Dataset):
             self.corpus_lines = 0
             corpus_fnames = os.listdir(corpus_path)
             total_line_count = 0
+            index = 0
             for fname in corpus_fnames:
                 if ".pkl" not in fname:
                     continue
+                index += 1
+                if index > 30:
+                    break
                 fname = os.path.join(corpus_path, fname)
                 finfo = os.stat(fname)
                 if finfo.st_size < 100: # to drop incomplete files
@@ -552,6 +556,7 @@ def main():
 
 
     ################### OWE
+    corpus_directory = Path(args.corpus_directory)
     output_directory = Path(args.output_directory)
     output_directory.mkdir(parents=True, exist_ok=True)
     # Try to load config file
@@ -560,8 +565,22 @@ def main():
         raise FileNotFoundError("No config file found under: {}.".format(config_file))
     train_file, valid_file, test_file, skip_header, split_symbol, wiki_file = read_config(config_file)
 
-    output_directory = Path(args.output_directory)
-    output_directory.mkdir(parents=True, exist_ok=True)
+    # Load dataset
+    dataset = data.load_dataset(train_file=corpus_directory / train_file,
+                                valid_file=corpus_directory / valid_file,
+                                test_file=corpus_directory / test_file,
+                                split_symbol=split_symbol,
+                                header=skip_header,
+                                entitydata_file=corpus_directory / wiki_file)
+
+    # Load pretrained word embeddings
+    word_vectors = data.load_embedding_file(Config.get('PretrainedEmbeddingFile'))
+    embedding_dim = word_vectors.vector_size
+    logger.info("Building embedding matrix")
+    dataset.vocab.load_vectors(word_vectors)  # Create embedding for known words
+
+#    output_directory = Path(args.output_directory)
+#    output_directory.mkdir(parents=True, exist_ok=True)
 
     # load KGC model
     kgc_model_name, kgc_model_directory = None, None
@@ -579,9 +598,15 @@ def main():
     Config.set("LinkPredictionModelType", kgc_model_name)
     logger.info("LinkPredictionModelType: {}".format(kgc_model_name))
 
-    mapper = Mapper(torch.zeros((18804, 300), dtype=torch.float32), 300)
-    mapper = torch.nn.DataParallel(mapper)
-    #mapper = mapper.to(device)
+    mapper = Mapper(dataset.vocab.vectors, embedding_dim)
+#    mapper = torch.nn.DataParallel(mapper, device_ids=Config.get("GPUs"))
+#    mapper = mapper.to(Config.get("device"))
+
+#    mapper = Mapper(torch.zeros((18804, 300), dtype=torch.float32), 300)
+    mapper = torch.nn.DataParallel(mapper, device_ids=Config.get("GPUs"))
+    mapper = mapper.to(device)
+#    mapper = torch.nn.DataParallel(mapper)
+#    mapper = mapper.to(device)
     assert args.load_best, "You should input `load_best` in your command."
     if args.load_best:
         checkpoint_file = 'best_checkpoint.OWE.pth.tar'
